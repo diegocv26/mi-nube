@@ -1,0 +1,23 @@
+# Dependencias
+node_modules/
+
+# Secretos y configuración local
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Archivos subidos (fotos, videos y audios personales)
+uploads/
+
+# Copias de base de datos
+*.sql
+*.dump
+
+# Build, logs y basura del sistema
+dist/
+*.log
+.DS_Store
