@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { pool, initDb } = require('./db');
+const { startServers } = require('./tls');
 
 const execFileAsync = promisify(execFile);
 
@@ -29,10 +30,16 @@ if (!JWT_SECRET || JWT_SECRET.length < 32) {
 }
 const ALLOW_REGISTER = process.env.ALLOW_REGISTER !== 'false';
 
+// HTTPS: se activa con USE_HTTPS=true (por ejemplo "npm run start:https")
+const USE_HTTPS = process.env.USE_HTTPS === 'true';
+const HTTPS_PORT = Number(process.env.HTTPS_PORT) || 4443;
+const HTTPS_KEY = path.resolve(__dirname, process.env.HTTPS_KEY || '../certs/key.pem');
+const HTTPS_CERT = path.resolve(__dirname, process.env.HTTPS_CERT || '../certs/cert.pem');
+
 const COOKIE_OPTS = {
   httpOnly: true,   // JavaScript del navegador no puede leer la cookie
   sameSite: 'lax',  // no se envía desde otros sitios (protege de CSRF)
-  secure: process.env.COOKIE_SECURE === 'true', // true solo si usás HTTPS
+  // 'secure' se agrega en setSession(): true cuando la conexión es HTTPS
   maxAge: 30 * 24 * 60 * 60 * 1000, // 30 días
 };
 
@@ -45,6 +52,8 @@ app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff'); // el navegador no adivina tipos
   res.setHeader('X-Frame-Options', 'DENY');           // nadie puede meter la app en un iframe
   res.setHeader('Referrer-Policy', 'same-origin');
+  // Le dice al navegador que use siempre HTTPS con este sitio (1 día; los navegadores la ignoran con IPs)
+  if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=86400');
   next();
 });
 app.use(express.json());
@@ -198,11 +207,12 @@ async function backfill() {
 
 // ---------- Autenticación ----------
 
-function setSession(res, user) {
+function setSession(req, res, user) {
   const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, {
     expiresIn: '30d',
   });
-  res.cookie('token', token, COOKIE_OPTS);
+  // Con HTTPS la cookie viaja marcada "Secure": el navegador nunca la envía por HTTP
+  res.cookie('token', token, { ...COOKIE_OPTS, secure: req.secure });
 }
 
 function requireAuth(req, res, next) {
@@ -276,7 +286,7 @@ app.post('/api/auth/register', async (req, res) => {
     await pool.query('UPDATE files SET user_id = $1 WHERE user_id IS NULL', [user.id]);
   }
 
-  setSession(res, user);
+  setSession(req, res, user);
   res.status(201).json(user);
 });
 
@@ -291,7 +301,7 @@ app.post('/api/auth/login', async (req, res) => {
   const ok = await bcrypt.compare(password, user ? user.password_hash : DUMMY_HASH);
   if (!user || !ok) return res.status(401).json({ error: 'Usuario o contraseña incorrectos' });
 
-  setSession(res, user);
+  setSession(req, res, user);
   res.json({ id: user.id, username: user.username });
 });
 
@@ -492,7 +502,13 @@ app.use((err, req, res, next) => {
 
 initDb()
   .then(() => {
-    app.listen(PORT, '0.0.0.0', () => console.log(`Servidor en puerto ${PORT}`));
+    startServers(app, {
+      port: PORT,
+      httpsPort: HTTPS_PORT,
+      useHttps: USE_HTTPS,
+      keyPath: HTTPS_KEY,
+      certPath: HTTPS_CERT,
+    });
     backfill().catch((err) => console.error('Error completando metadatos:', err));
   })
   .catch((err) => {

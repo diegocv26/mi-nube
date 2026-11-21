@@ -21,3 +21,5 @@ uploads/
 dist/
 *.log
 .DS_Store
+
+certs/
